@@ -216,7 +216,9 @@ end
 function DataParallelTable:add(module, gpuid)
    assert(gpuid <= cutorch.getDeviceCount() and gpuid >= 1)
    assert(#self.modules == #self.gpuAssignments)
-
+    
+   -- 外部其实已经cutorch.setDevice(gpuid)
+   -- 将module运载到gpuid的GPU上
    self.modules[#self.modules + 1] = module:cuda()
    self.gpuAssignments[#self.gpuAssignments + 1] = gpuid
 
@@ -269,6 +271,7 @@ function DataParallelTable:flattenParameters()
   setDevice(prevGpuid)
 end
 
+-- input 必须已经运载到GPU中了（base GPU）
 function DataParallelTable:updateOutput(input)
 
    if self.flattenParams and not self.flattenedParamsGpu[baseGpuIndex] then
@@ -282,10 +285,12 @@ function DataParallelTable:updateOutput(input)
    local prevGpuid = cutorch.getDevice()
 
    -- distribute the input to GPUs
+   -- 将输入分配到不同的GPU中
    for i = 1, #self.modules do
       local gpuid = self.gpuAssignments[i]
       -- Split the tensors in the input nested table to the GPU with gpuid
       -- _distributeTensorRecursive(src,dst,srcGpuid,srcInd,dstGpuid,dstInd)
+      -- 其实是将input近似平均分配到这几个GPU中
       self.inputGpu[gpuid] = self:_distributeTensorRecursive(
          input, self.inputGpu[gpuid],
          baseGpuid, baseGpuIndex, gpuid, i,
@@ -498,8 +503,9 @@ function DataParallelTable:type(typeStr)
 end
 
 function DataParallelTable:_calculateSliceRange(tensor, id, total)
-   local outerDim = tensor:size(self.dimension)
-   local eltsPerMod = torch.round( outerDim / #self.modules )
+   local outerDim = tensor:size(self.dimension) 
+   -- 从这里可以看出，是将数据近似分配到相关GPU中的
+   local eltsPerMod = torch.round( outerDim / #self.modules )  
    local rangeStart = (id - 1) * eltsPerMod + 1
    local rangeEnd = rangeStart + eltsPerMod - 1
    if id == total then
@@ -536,6 +542,7 @@ function DataParallelTable:_distributeTensorRecursive(src, dst,
 
       -- Split the tensor
       assert(torch.typename(src) == 'torch.CudaTensor')
+      -- 计算出src太分配到相关GPU的相关切片
       local slice = src[{self:_calculateSliceRange(src, dstIndex, nModules)}]
 
       if not dst:isSameSizeAs(slice) then
